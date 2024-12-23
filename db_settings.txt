@@ -1,0 +1,45 @@
+CREATE TABLE Contracts (
+    ID                           INTEGER     NOT NULL
+                                             UNIQUE
+                                             PRIMARY KEY AUTOINCREMENT,
+    title                        STRING      NOT NULL,
+    marker                       INTEGER     NOT NULL
+                                             REFERENCES Marker (ID),
+    number                       INTEGER     NOT NULL,
+    start_date                   STRING (10) NOT NULL,
+    end_date                     STRING (10) NOT NULL,
+    transferred_to_production    BOOLEAN     NOT NULL,
+    file                         STRING,
+    [material_ is_purchased]     BOOLEAN     NOT NULL,
+    produced                     BOOLEAN     NOT NULL,
+    painted                      BOOLEAN     NOT NULL,
+    completed                    BOOLEAN     NOT NULL,
+    salary_is_taken_into_account BOOLEAN     NOT NULL
+);
+CREATE TABLE Calendar (
+    ID       INTEGER  PRIMARY KEY AUTOINCREMENT
+                      NOT NULL,
+    start    DATETIME NOT NULL,
+    end      DATETIME NOT NULL,
+    contract INTEGER  REFERENCES Contracts (ID),
+    montage  DATETIME
+);
+CREATE TABLE Employees (
+    ID       INTEGER PRIMARY KEY AUTOINCREMENT
+                     NOT NULL
+                     UNIQUE,
+    name     STRING  UNIQUE
+                     NOT NULL,
+    position STRING
+);
+CREATE TABLE EmployeesContracts (
+    EmployeeID INTEGER REFERENCES Employees (ID),
+    ContractID INTEGER REFERENCES Contracts (ID)
+);
+CREATE TABLE Marker (
+    ID   INTEGER     PRIMARY KEY AUTOINCREMENT
+                     UNIQUE
+                     NOT NULL,
+    type STRING (10) UNIQUE
+                     NOT NULL
+);
