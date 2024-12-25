@@ -25,12 +25,15 @@ CREATE TABLE Calendar (
     montage  DATETIME
 );
 CREATE TABLE Employees (
-    ID       INTEGER PRIMARY KEY AUTOINCREMENT
-                     NOT NULL
-                     UNIQUE,
-    name     STRING  UNIQUE
-                     NOT NULL,
-    position STRING
+    ID              INTEGER PRIMARY KEY AUTOINCREMENT
+                            NOT NULL
+                            UNIQUE,
+    name            STRING  UNIQUE
+                            NOT NULL,
+    position        STRING,
+    hashed_password STRING  NOT NULL,
+    login           STRING  NOT NULL
+                            UNIQUE
 );
 CREATE TABLE EmployeesContracts (
     EmployeeID INTEGER REFERENCES Employees (ID),

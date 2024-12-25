@@ -1,10 +1,14 @@
-from flask import Flask, request, jsonify
-from datetime import datetime
-import sqlite3
+import bcrypt
 import os
+import sqlite3
+import uuid
+from datetime import datetime
+
+from flask import Flask, request, jsonify
 
 DB_PATH = 'database.db'
 app = Flask(__name__)
+sessions = {}
 
 
 def make_database():
@@ -14,13 +18,24 @@ def make_database():
         cur.executescript(f.read())
 
 
-def execute_query(query, params=(), fetch_all=True):
+# Хэширование пароля
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed_password.decode('utf-8')
+
+
+# Проверка пароля
+def check_password(password: str, hashed_password: str) -> bool:
+    return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+
+def execute_query(query, params=(), fetch_all=''):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(query, params)
         if fetch_all:
-            return cursor.fetchall()
-        return cursor.fetchone()
+            return cursor.fetchall() if fetch_all == "y" else cursor.fetchone()
 
 
 # Вспомогательная функция для преобразования данных
@@ -43,6 +58,48 @@ def format_contract_row(row):
     }
 
 
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    username = data['username']
+    position = data['position']
+    login_ = data['login']
+    password = data['password']
+
+    query = '''
+            SELECT 1 FROM Employees
+            WHERE login = ?
+            LIMIT 1
+        '''
+    if execute_query(query, (login_,), fetch_all="n") is not None:
+        return jsonify({"error": "User already exists"}), 400
+
+    # Хэшируем пароль перед сохранением
+    hashed_password = hash_password(password)
+    query2 = 'INSERT INTO Employees (name, position, hashed_password, login) VALUES (?, ?, ?, ?)'
+    execute_query(query2, (username, position, hashed_password, login_), fetch_all="n")
+    return jsonify({"message": "User registered successfully"}), 201
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    login_ = data['login']
+    password = data['password']
+
+    query = '''
+                SELECT hashed_password FROM Employees
+                WHERE login = ?
+                LIMIT 1
+            '''
+
+    if check_password(password, execute_query(query, (login_,), fetch_all="n")):
+        token = str(uuid.uuid4())
+        sessions[token] = login_
+        return jsonify({"token": token})
+    return jsonify({"error": "Invalid credentials"}), 401
+
+
 # Получение контрактов в диапазоне дат
 @app.route('/get_contracts', methods=['POST'])
 def get_contracts():
@@ -53,7 +110,7 @@ def get_contracts():
 
         query = '''
             SELECT * FROM Contracts
-            WHERE (start_date <= ?) AND (end_date >= ?)
+            WHERE (start_date <= ?) AND (end_date >= ?) 
         '''
         result = execute_query(query, (end_date, start_date))
 
