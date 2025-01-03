@@ -1,28 +1,20 @@
 CREATE TABLE Contracts (
-    ID                           INTEGER     NOT NULL
-                                             UNIQUE
-                                             PRIMARY KEY AUTOINCREMENT,
-    title                        STRING      NOT NULL,
-    marker                       INTEGER     NOT NULL
-                                             REFERENCES Marker (ID),
-    number                       INTEGER     NOT NULL,
-    start_date                   STRING (10) NOT NULL,
-    end_date                     STRING (10) NOT NULL,
-    transferred_to_production    BOOLEAN     NOT NULL,
+    ID                           INTEGER  NOT NULL
+                                          UNIQUE
+                                          PRIMARY KEY AUTOINCREMENT,
+    title                        STRING   NOT NULL,
+    marker                       INTEGER  NOT NULL
+                                          REFERENCES Marker (ID),
+    number                       INTEGER  NOT NULL,
+    start_date                   DATETIME NOT NULL,
+    end_date                     DATETIME NOT NULL,
+    transferred_to_production    BOOLEAN  NOT NULL,
     file                         STRING,
-    [material_ is_purchased]     BOOLEAN     NOT NULL,
-    produced                     BOOLEAN     NOT NULL,
-    painted                      BOOLEAN     NOT NULL,
-    completed                    BOOLEAN     NOT NULL,
-    salary_is_taken_into_account BOOLEAN     NOT NULL
-);
-CREATE TABLE Calendar (
-    ID       INTEGER  PRIMARY KEY AUTOINCREMENT
-                      NOT NULL,
-    start    DATETIME NOT NULL,
-    end      DATETIME NOT NULL,
-    contract INTEGER  REFERENCES Contracts (ID),
-    montage  DATETIME
+    material_is_purchased        BOOLEAN  NOT NULL,
+    produced                     BOOLEAN  NOT NULL,
+    painted                      BOOLEAN  NOT NULL,
+    completed                    BOOLEAN  NOT NULL,
+    salary_is_taken_into_account BOOLEAN  NOT NULL
 );
 CREATE TABLE Employees (
     ID              INTEGER PRIMARY KEY AUTOINCREMENT
@@ -33,7 +25,8 @@ CREATE TABLE Employees (
     position        STRING,
     hashed_password STRING  NOT NULL,
     login           STRING  NOT NULL
-                            UNIQUE
+                            UNIQUE,
+    firebase_token  STRING  UNIQUE
 );
 CREATE TABLE EmployeesContracts (
     EmployeeID INTEGER REFERENCES Employees (ID),
@@ -45,4 +38,20 @@ CREATE TABLE Marker (
                      NOT NULL,
     type STRING (10) UNIQUE
                      NOT NULL
+);
+CREATE TABLE AssignmentRequests (
+    ID          TEXT     PRIMARY KEY,
+    EmployeeID  TEXT     NOT NULL,
+    ContractID  TEXT     NOT NULL,
+    Status      TEXT     NOT NULL
+                         DEFAULT 'PENDING',
+    RequestedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (
+        EmployeeID
+    )
+    REFERENCES Employees (ID),
+    FOREIGN KEY (
+        ContractID
+    )
+    REFERENCES Contracts (ID)
 );
