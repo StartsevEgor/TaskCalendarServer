@@ -8,6 +8,7 @@ CREATE TABLE Contracts (
     number                       INTEGER  NOT NULL,
     start_date                   DATETIME NOT NULL,
     end_date                     DATETIME NOT NULL,
+    price                        INTEGER,
     transferred_to_production    BOOLEAN  NOT NULL,
     file                         STRING,
     material_is_purchased        BOOLEAN  NOT NULL,
@@ -17,16 +18,19 @@ CREATE TABLE Contracts (
     salary_is_taken_into_account BOOLEAN  NOT NULL
 );
 CREATE TABLE Employees (
-    ID              INTEGER PRIMARY KEY AUTOINCREMENT
-                            NOT NULL
-                            UNIQUE,
-    name            STRING  UNIQUE
-                            NOT NULL,
-    position        STRING,
-    hashed_password STRING  NOT NULL,
-    login           STRING  NOT NULL
-                            UNIQUE,
-    firebase_token  STRING  UNIQUE
+    ID                    INTEGER  PRIMARY KEY AUTOINCREMENT
+                                   NOT NULL
+                                   UNIQUE,
+    name                  STRING   UNIQUE
+                                   NOT NULL,
+    position              STRING,
+    hashed_password       STRING   NOT NULL,
+    login                 STRING   NOT NULL
+                                   UNIQUE,
+    firebase_token        STRING   UNIQUE
+                                   NOT NULL,
+    refresh_token         STRING   UNIQUE,
+    refresh_token_expires DATETIME
 );
 CREATE TABLE EmployeesContracts (
     EmployeeID INTEGER REFERENCES Employees (ID),
@@ -40,10 +44,12 @@ CREATE TABLE Marker (
                      NOT NULL
 );
 CREATE TABLE AssignmentRequests (
-    ID          TEXT     PRIMARY KEY,
-    EmployeeID  TEXT     NOT NULL,
-    ContractID  TEXT     NOT NULL,
-    Status      TEXT     NOT NULL
+    ID          INTEGER  PRIMARY KEY
+                         UNIQUE
+                         NOT NULL,
+    EmployeeID  STRING   NOT NULL,
+    ContractID  STRING   NOT NULL,
+    Status      STRING   NOT NULL
                          DEFAULT 'PENDING',
     RequestedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (
@@ -54,4 +60,19 @@ CREATE TABLE AssignmentRequests (
         ContractID
     )
     REFERENCES Contracts (ID)
+);
+CREATE TABLE RegistrationRequests (
+    ID              INTEGER PRIMARY KEY AUTOINCREMENT
+                            UNIQUE
+                            NOT NULL,
+    name            STRING  NOT NULL,
+    position        STRING  NOT NULL,
+    login           STRING  NOT NULL
+                            UNIQUE,
+    hashed_password STRING  NOT NULL,
+    firebase_token  STRING  UNIQUE
+                            NOT NULL,
+    Status          STRING  NOT NULL
+                            DEFAULT 'PENDING',
+    RequestedAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );

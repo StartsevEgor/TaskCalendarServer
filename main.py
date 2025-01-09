@@ -4,17 +4,24 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta
 from firebase_admin import messaging, credentials, initialize_app
-
 from flask import Flask, request, jsonify
 
+# Путь для хранения файлов контрактов
+CONTRACT_FILES_PATH = 'contract_files'
+
 DB_PATH = 'database.db'
-TOKEN_TTL = 60
+ACCESS_TOKEN_TTL = 30
+REFRESH_TOKEN_TTL = 7
 app = Flask(__name__)
 sessions = {}
 
 # Инициализация Firebase
 cred = credentials.Certificate("serviceAccountKey.json")
 initialize_app(cred)
+
+# Создание папки для файлов, если её нет
+if not os.path.exists(CONTRACT_FILES_PATH):
+    os.makedirs(CONTRACT_FILES_PATH)
 
 
 def send_push_notification(title, body, token):
@@ -49,9 +56,11 @@ def execute_query(query: str, params=(), fetch_all=''):
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
-            return cursor.fetchall() if fetch_all == "y" else (cursor.fetchone() if fetch_all else None)
-    except sqlite3.Error as e:
-        print(f"SQL Error: {e}")
+            result = cursor.fetchall() if fetch_all == "y" else (cursor.fetchone() if fetch_all else None)
+            conn.commit()
+            return result
+    except sqlite3.Error:
+        print(f"SQL Error")
         return None
 
 
@@ -65,13 +74,14 @@ def format_contract_row(row):
         "number": row[3],
         "start_date": row[4],
         "end_date": row[5],
-        "transferred_to_production": bool(row[6]),
-        "file": row[7],
-        "material_is_purchased": bool(row[8]),
-        "produced": bool(row[9]),
-        "painted": bool(row[10]),
-        "completed": bool(row[11]),
-        "salary_is_taken_into_account": bool(row[12]),
+        "price": row[6],
+        "transferred_to_production": bool(row[7]),
+        "file": row[8],
+        "material_is_purchased": bool(row[9]),
+        "produced": bool(row[10]),
+        "painted": bool(row[11]),
+        "completed": bool(row[12]),
+        "salary_is_taken_into_account": bool(row[13]),
     }
 
 
@@ -86,7 +96,19 @@ def token_check(token):
     if not ttl_check(session["expires_at"]):
         del sessions[token]
         return jsonify({"error": "Истёк срок действия токена"}), 400
-    session["expires_at"] = datetime.now() + timedelta(minutes=TOKEN_TTL)
+    session["expires_at"] = datetime.now() + timedelta(minutes=ACCESS_TOKEN_TTL)
+    return None
+
+
+def position_check(token, access):
+    query_position = '''
+            SELECT position FROM Employees
+            WHERE login = ?
+            LIMIT 1
+        '''
+    position = execute_query(query_position, (sessions[token]["login"],), fetch_all="n")[0]
+    if position not in access:
+        return jsonify({"error": f"Доступ разрешён только для {', '.join(access)}"}), 403
     return None
 
 
@@ -102,32 +124,135 @@ def get_user_id(login_):
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
-    username = data['username']
-    position = data['position']
-    login_ = data['login']
-    password = data['password']
-    firebase_token = data['firebase_token']
+    username = data.get('username')
+    position = data.get('position')
+    login_ = data.get('login')
+    password = data.get('password')
+    firebase_token = data.get('firebase_token')
 
+    # Проверка, существует ли пользователь с таким логином
     query = '''
-            SELECT 1 FROM Employees
-            WHERE login = ?
-            LIMIT 1
-        '''
-    if execute_query(query, (login_,), fetch_all="n") is not None:
-        return jsonify({"error": "Пользователь уже существует"}), 400
+        SELECT 1 FROM Employees
+        WHERE login = ?
+        LIMIT 1
+    '''
+    if execute_query(query, (login_,), fetch_all="n")[0] is not None:
+        return jsonify({"error": "Пользователь с таким логином уже существует"}), 400
 
-    # Хэшируем пароль перед сохранением
+    # Проверка, существует ли заявка с таким логином
+    query_request = '''
+        SELECT 1 FROM RegistrationRequests
+        WHERE login = ?
+        LIMIT 1
+    '''
+    if execute_query(query_request, (login_,), fetch_all="n")[0] is not None:
+        return jsonify({"error": "Заявка с таким логином уже отправлена"}), 400
+
     hashed_password = hash_password(password)
-    query2 = 'INSERT INTO Employees (name, position, hashed_password, login, firebase_token) VALUES (?, ?, ?, ?, ?)'
-    execute_query(query2, (username, position, hashed_password, login_, firebase_token))
-    return jsonify({"message": "Пользователь успешно зарегистрировался", "id": get_user_id(login_)}), 201
+    try:
+        query_insert = '''
+            INSERT INTO RegistrationRequests (name, position, login, hashed_password, firebase_token)
+            VALUES (?, ?, ?, ?, ?)
+        '''
+        execute_query(query_insert, (username, position, login_, hashed_password, firebase_token))
+
+        query_admins = '''
+            SELECT firebase_token FROM Employees
+            WHERE position = 'admin'
+        '''
+        admin_tokens = execute_query(query_admins, fetch_all="y")
+
+        # Уведомляем администраторов через Firebase
+        for admin_token in admin_tokens:
+            send_push_notification(
+                "Подтвердите регистрацию сотрудника",
+                f"Сотрудник {username} хочет поступить на должность {position}",
+                admin_token
+            )
+        return jsonify({"message": "Запрос отправлен на подтверждение"}), 201
+    except Exception:
+        return jsonify({"error": "Ошибка регистрации"}), 400
+
+
+@app.route('/view_registration_requests', methods=['POST'])
+def view_registration_requests():
+    data = request.json
+    token = data['token']
+    check_token, check_position = token_check(token), position_check(token, ["admin"])
+    if check_token:
+        return check_token
+    if check_position:
+        return check_position
+
+    # Получаем заявки
+    query_requests = '''
+        SELECT id, name, position FROM RegistrationRequests
+    '''
+    requests = execute_query(query_requests, fetch_all="y")
+    return jsonify([{"id": r[0], "name": r[1], "position": r[2]} for r in requests]), 200
+
+
+@app.route('/update_registration_request', methods=['POST'])
+def update_registration_request():
+    data = request.json
+    token = data['token']
+    check_token, check_position = token_check(token), position_check(token, ["admin"])
+    if check_token:
+        return check_token
+    if check_position:
+        return check_position
+
+    try:
+        request_id = data['request_id']
+        new_status = data['status']  # APPROVED или REJECTED
+
+        if new_status not in ['APPROVED', 'REJECTED']:
+            return jsonify({"error": "Некорректный статус"}), 400
+
+        if new_status == 'APPROVED':
+            # Получаем данные о запросе
+            query_request = '''
+                SELECT name, position, login, hashed_password, firebase_token
+                FROM RegistrationRequests
+                WHERE ID = ?
+            '''
+            request_data = execute_query(query_request, (request_id,), fetch_all="n")
+            if request_data:
+                name, position, login_, hashed_password, firebase_token = request_data
+
+                # Добавляем нового сотрудника
+                query_add_employee = '''
+                    INSERT INTO Employees (name, position, login, hashed_password, firebase_token)
+                    VALUES (?, ?, ?, ?, ?)
+                '''
+                execute_query(query_add_employee, (name, position, login_, hashed_password, firebase_token))
+
+            # Удаляем запрос после обработки
+            query_delete = '''
+                DELETE FROM RegistrationRequests
+                WHERE ID = ?
+            '''
+            execute_query(query_delete, (request_id,))
+            return jsonify({"message": f"Заявка успешно одобрена и удалена"}), 200
+
+        elif new_status == 'REJECTED':
+            # Удаляем отклонённый запрос
+            query_delete = '''
+                DELETE FROM RegistrationRequests
+                WHERE ID = ?
+            '''
+            execute_query(query_delete, (request_id,))
+            return jsonify({"message": f"Заявка успешно отклонена и удалена"}), 200
+
+    except Exception:
+        return jsonify({"error": "Ошибка обработки заявки"}), 400
 
 
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
-    login_ = data['login']
-    password = data['password']
+    login_ = data.get('login')
+    password = data.get('password')
 
     query = '''
         SELECT hashed_password FROM Employees
@@ -138,10 +263,65 @@ def login():
     if not hashed_password:
         return jsonify({"error": "Пользователь ещё не зарегистрирован"}), 400
     if hashed_password and check_password(password, hashed_password):
-        token = str(uuid.uuid4())
-        sessions[token] = {"login": login_, "expires_at": datetime.now() + timedelta(minutes=TOKEN_TTL)}
-        return jsonify({"token": token, "id": get_user_id(login_)})
+        refresh_token = str(uuid.uuid4())
+        refresh_token_expires = datetime.now() + timedelta(days=REFRESH_TOKEN_TTL)
+
+        update_query = '''
+                    UPDATE Employees
+                    SET refresh_token = ?, refresh_token_expires = ?
+                    WHERE login = ?
+                '''
+        execute_query(update_query, (refresh_token, refresh_token_expires, login_))
+
+        return jsonify({
+            "refresh_token": refresh_token,
+            "refresh_token_expires": refresh_token_expires.isoformat(),
+            "id": get_user_id(login_)
+        })
     return jsonify({"error": "Неверные учетные данные"}), 401
+
+
+@app.route('/login_with_token', methods=['POST'])
+def login_with_token():
+    data = request.json
+    login_ = data.get('login')
+    refresh_token = data.get('refresh_token')
+
+    # Проверка валидности refresh_token
+    query = '''
+        SELECT refresh_token, refresh_token_expires
+        FROM Employees
+        WHERE login = ?
+        LIMIT 1
+    '''
+    result = execute_query(query, (login_,), fetch_all="n")
+
+    if not result:
+        return jsonify({"error": "Пользователь не найден"}), 404
+
+    db_token, expires_at = result
+    if db_token != refresh_token or datetime.now() > datetime.fromisoformat(expires_at):
+        return jsonify({"error": "Токен недействителен или истёк"}), 401
+
+    # Генерация нового refresh_token и access_token
+    new_refresh_token = str(uuid.uuid4())
+    new_refresh_token_expires = datetime.now() + timedelta(days=REFRESH_TOKEN_TTL)
+    access_token = str(uuid.uuid4())  # Краткосрочный токен
+    access_token_expires = datetime.now() + timedelta(minutes=ACCESS_TOKEN_TTL)
+
+    # Обновление refresh_token в базе данных
+    update_query = '''
+        UPDATE Employees
+        SET refresh_token = ?, refresh_token_expires = ?
+        WHERE login = ?
+    '''
+    execute_query(update_query, (new_refresh_token, new_refresh_token_expires, login_))
+    sessions[access_token] = {"login": login_, "expires_at": access_token_expires}
+    # Возврат токенов
+    return jsonify({
+        "refresh_token": new_refresh_token,
+        "access_token": access_token,
+    }), 200
 
 
 # Получение контрактов в диапазоне дат
@@ -188,53 +368,41 @@ def get_contracts():
 
         formatted_result = [format_contract_row(row) for row in result]
         return jsonify(formatted_result), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
-import os
-
-# Путь для хранения файлов контрактов
-CONTRACT_FILES_PATH = 'contract_files'
-
-# Создание папки для файлов, если её нет
-if not os.path.exists(CONTRACT_FILES_PATH):
-    os.makedirs(CONTRACT_FILES_PATH)
+    except Exception:
+        return jsonify({"error": "Ошибка получения контрактов"}), 400
 
 
 @app.route('/add_contract', methods=['POST'])
 def add_contract():
     data = request.form  # Используем request.form для текстовых данных
     token = data.get('token')
+    check_token, check_position = token_check(token), position_check(token, ["admin"])
+    if check_token:
+        return check_token
+    if check_position:
+        return check_position
 
-    # Проверка токена
-    check = token_check(token)
-    if check:
-        return check
-
-    # Проверка, что пользователь - администратор
-    query_position = '''
-        SELECT position FROM Employees
-        WHERE login = ?
-        LIMIT 1
-    '''
-    position = execute_query(query_position, (sessions[token]["login"],), fetch_all="n")
-    if not position or position[0] != "admin":
-        return jsonify({"error": "Доступ запрещён. Только администраторы могут добавлять контракты"}), 403
-
-    # Извлечение данных контракта
     title = data.get('title')
     marker = data.get('marker')
     number = data.get('number')
     start_date = data.get('start_date')
     end_date = data.get('end_date')
+    price = data.get('price')
+    transferred_to_production = data.get('transferred_to_production')
+    material_is_purchased = data.get('material_is_purchased')
+    produced = data.get('produced')
+    painted = data.get('painted')
+    completed = data.get('completed')
+    salary_is_taken_into_account = data.get('salary_is_taken_into_account')
 
-    # Проверка, что обязательные поля заполнены
-    if not (title and marker and number and start_date and end_date):
+    # Проверка обязательных полей
+    if not all([title, marker, number, start_date, end_date, transferred_to_production, material_is_purchased,
+                produced, painted, completed, salary_is_taken_into_account]):
         return jsonify({"error": "Не все обязательные поля заполнены"}), 400
 
     # Обработка файла
     file = request.files.get('file')
+    unique_filename = None
     file_path = None
     if file:
         # Проверка расширения файла
@@ -249,22 +417,28 @@ def add_contract():
         # Сохранение файла
         try:
             file.save(file_path)
-        except Exception as e:
-            return jsonify({"error": f"Ошибка сохранения файла: {str(e)}"}), 500
+        except Exception:
+            return jsonify({"error": f"Ошибка сохранения файла"}), 500
 
     try:
         # Добавление контракта в базу данных
         query_insert = '''
-            INSERT INTO Contracts (title, marker, number, start_date, end_date, file)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO Contracts (
+                title, marker, number, start_date, end_date, price, transferred_to_production, file, 
+                material_is_purchased, produced, painted, completed, salary_is_taken_into_account
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
-        execute_query(query_insert, (title, marker, number, start_date, end_date, unique_filename))
+        execute_query(query_insert, (
+            title, marker, number, start_date, end_date, price, transferred_to_production,
+            unique_filename, material_is_purchased, produced, painted, completed, salary_is_taken_into_account
+        ))
         return jsonify({"message": "Контракт успешно добавлен"}), 201
-    except Exception as e:
+    except Exception:
         # Удаление файла в случае ошибки
-        if file_path and os.path.exists(file_path):
+        if unique_filename and os.path.exists(file_path):
             os.remove(file_path)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ошибка добавления контракта"}), 500
 
 
 # Добавление связи сотрудника и контракта
@@ -279,22 +453,22 @@ def assign_employee_to_contract():
         query = 'INSERT INTO Requests (ID, ContractID, EmployeeID) VALUES (?, ?, ?)'
         execute_query(query, (str(uuid.uuid4()), data['contract_id'], data['employee_id']))
 
-        query_admin = '''
+        query_admins = '''
             SELECT firebase_token FROM Employees
-            WHERE login = ?
-            LIMIT 1
+            WHERE position = 'admin'
         '''
-        admin_token = execute_query(query_admin, (sessions[token]['login'],), fetch_all="n")
+        admin_tokens = execute_query(query_admins, fetch_all="y")
 
-        # Уведомляем администратора через Firebase
-        send_push_notification(
-            "Новый запрос на подтверждение",
-            f"Контракт {data['contract_id']} отправлен на подтверждение",
-            admin_token
-        )
-        return jsonify({"message": "Request sent for approval"}), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        # Уведомляем администраторов через Firebase
+        for admin_token in admin_tokens:
+            send_push_notification(
+                "Подтвердите взятие контракта",
+                f"{data['username']} хочет взять контракт {data['contract_id']}",
+                admin_token
+            )
+        return jsonify({"message": "Запрос отправлен на подтверждение"}), 201
+    except Exception:
+        return jsonify({"error": "Ошибка принятия контракта"}), 400
 
 
 # Просмотр, одобрение или отклонение запросов
@@ -302,19 +476,11 @@ def assign_employee_to_contract():
 def review_assignment_requests():
     data = request.json
     token = data['token']
-    check = token_check(token)
-    if check:
-        return check
-
-    # Проверяем роль пользователя
-    query_position = '''
-        SELECT position FROM Employees
-        WHERE login = ?
-        LIMIT 1
-    '''
-    position = execute_query(query_position, (sessions[token]["login"],), fetch_all="n")[0]
-    if position != 'admin':
-        return jsonify({"error": "Доступ разрешён только администраторам"}), 403
+    check_token, check_position = token_check(token), position_check(token, ["admin"])
+    if check_token:
+        return check_token
+    if check_position:
+        return check_position
 
     query = '''
         SELECT ID, EmployeeID, ContractID, Status, RequestedAt
@@ -329,78 +495,16 @@ def review_assignment_requests():
     return jsonify(formatted_requests), 200
 
 
-@app.route('/update_assignment_request', methods=['POST'])
-def update_assignment_request():
-    data = request.json
-    token = data['token']
-    check = token_check(token)
-    if check:
-        return check
-
-    query_position = '''
-        SELECT position FROM Employees
-        WHERE login = ?
-        LIMIT 1
-    '''
-    position = execute_query(query_position, (sessions[token]["login"],), fetch_all="n")[0]
-    if position != 'admin':
-        return jsonify({"error": "Доступ разрешён только администраторам"}), 403
-
-    try:
-        request_id = data['request_id']
-        new_status = data['status']  # APPROVED или REJECTED
-
-        if new_status not in ['APPROVED', 'REJECTED']:
-            return jsonify({"error": "Некорректный статус"}), 400
-
-        if new_status == 'APPROVED':
-            # Получаем данные о запросе
-            query_request = '''
-                SELECT EmployeeID, ContractID
-                FROM AssignmentRequests
-                WHERE ID = ?
-            '''
-            request_data = execute_query(query_request, (request_id,), fetch_all="n")
-            if request_data:
-                employee_id, contract_id = request_data
-
-                # Добавляем связь сотрудника и контракта
-                query_assign = '''
-                    INSERT INTO EmployeesContracts (EmployeeID, ContractID)
-                    VALUES (?, ?)
-                '''
-                execute_query(query_assign, (employee_id, contract_id))
-
-        # Обновляем статус запроса
-        query_update = '''
-            UPDATE AssignmentRequests
-            SET Status = ?
-            WHERE ID = ?
-        '''
-        execute_query(query_update, (new_status, request_id))
-
-        return jsonify({"message": f"Запрос {new_status.lower()} успешно"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
 # Обновление статуса запроса
 @app.route('/update_assignment_request', methods=['POST'])
 def update_assignment_request():
     data = request.json
     token = data['token']
-    check = token_check(token)
-    if check:
-        return check
-
-    query_position = '''
-        SELECT position FROM Employees
-        WHERE login = ?
-        LIMIT 1
-    '''
-    position = execute_query(query_position, (sessions[token]["login"],), fetch_all="n")[0]
-    if position != 'admin':
-        return jsonify({"error": "Доступ разрешён только администраторам"}), 403
+    check_token, check_position = token_check(token), position_check(token, ["admin"])
+    if check_token:
+        return check_token
+    if check_position:
+        return check_position
 
     try:
         request_id = data['request_id']
@@ -444,8 +548,8 @@ def update_assignment_request():
             execute_query(query_delete, (request_id,))
             return jsonify({"message": f"Запрос успешно отклонён и удалён"}), 200
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Ошибка обработки заявки"}), 400
 
 
 if __name__ == '__main__':
