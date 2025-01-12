@@ -33,7 +33,7 @@ def send_push_notification(title, body, token):
 
 
 def make_database():
-    con = sqlite3.connect("database.sqlite")
+    con = sqlite3.connect("database.db")
     cur = con.cursor()
     with open("db_settings.txt", "r") as f:
         cur.executescript(f.read())
@@ -56,12 +56,12 @@ def execute_query(query: str, params=(), fetch_all=''):
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
-            result = cursor.fetchall() if fetch_all == "y" else (cursor.fetchone() if fetch_all else None)
+            result = cursor.fetchall() if fetch_all == "y" else ([cursor.fetchone()] if fetch_all == "n" else [None])
             conn.commit()
             return result
     except sqlite3.Error:
         print(f"SQL Error")
-        return None
+        return [None]
 
 
 # Вспомогательная функция для преобразования данных
@@ -129,15 +129,17 @@ def register():
     login_ = data.get('login')
     password = data.get('password')
     firebase_token = data.get('firebase_token')
-
+    print(1)
     # Проверка, существует ли пользователь с таким логином
     query = '''
         SELECT 1 FROM Employees
         WHERE login = ?
         LIMIT 1
     '''
+    print(execute_query(query, (login_,), fetch_all="n")[0])
     if execute_query(query, (login_,), fetch_all="n")[0] is not None:
         return jsonify({"error": "Пользователь с таким логином уже существует"}), 400
+    print(2)
 
     # Проверка, существует ли заявка с таким логином
     query_request = '''
@@ -147,6 +149,7 @@ def register():
     '''
     if execute_query(query_request, (login_,), fetch_all="n")[0] is not None:
         return jsonify({"error": "Заявка с таким логином уже отправлена"}), 400
+    print(3)
 
     hashed_password = hash_password(password)
     try:
@@ -155,12 +158,20 @@ def register():
             VALUES (?, ?, ?, ?, ?)
         '''
         execute_query(query_insert, (username, position, login_, hashed_password, firebase_token))
-
+        print(4)
         query_admins = '''
             SELECT firebase_token FROM Employees
             WHERE position = 'admin'
         '''
         admin_tokens = execute_query(query_admins, fetch_all="y")
+        print(5)
+        if len(admin_tokens) == 0:
+            query_add_employee = '''
+                                INSERT INTO Employees (name, position, login, hashed_password, firebase_token)
+                                VALUES (?, ?, ?, ?, ?)
+                            '''
+            execute_query(query_add_employee, (username, position, login_, hashed_password, firebase_token))
+            return jsonify({"message": "Успешная регистрация первого пользователя компании"}), 201
 
         # Уведомляем администраторов через Firebase
         for admin_token in admin_tokens:
