@@ -56,7 +56,14 @@ def execute_query(query: str, params=(), fetch_all=''):
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
-            result = cursor.fetchall() if fetch_all == "y" else ([cursor.fetchone()] if fetch_all == "n" else [None])
+            if fetch_all == "y":
+                result = cursor.fetchall()
+            elif fetch_all == "n":
+                result = cursor.fetchone()
+            elif fetch_all == "t":
+                result = bool(cursor.fetchone())
+            else:
+                result = None
             conn.commit()
             return result
     except sqlite3.Error:
@@ -137,7 +144,7 @@ def register():
         LIMIT 1
     '''
     print(execute_query(query, (login_,), fetch_all="n")[0])
-    if execute_query(query, (login_,), fetch_all="n")[0] is not None:
+    if execute_query(query, (login_,), fetch_all="t"):
         return jsonify({"error": "Пользователь с таким логином уже существует"}), 400
     print(2)
 
@@ -147,7 +154,7 @@ def register():
         WHERE login = ?
         LIMIT 1
     '''
-    if execute_query(query_request, (login_,), fetch_all="n")[0] is not None:
+    if execute_query(query_request, (login_,), fetch_all="t"):
         return jsonify({"error": "Заявка с таким логином уже отправлена"}), 400
     print(3)
 
@@ -166,12 +173,22 @@ def register():
         admin_tokens = execute_query(query_admins, fetch_all="y")
         print(5)
         if len(admin_tokens) == 0:
+            refresh_token = str(uuid.uuid4())
+            refresh_token_expires = datetime.now() + timedelta(days=REFRESH_TOKEN_TTL)
+
             query_add_employee = '''
-                                INSERT INTO Employees (name, position, login, hashed_password, firebase_token)
-                                VALUES (?, ?, ?, ?, ?)
-                            '''
-            execute_query(query_add_employee, (username, position, login_, hashed_password, firebase_token))
-            return jsonify({"message": "Успешная регистрация первого пользователя компании"}), 201
+                INSERT INTO Employees 
+                (name, position, login, hashed_password, firebase_token, refresh_token, refresh_token_expires)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            '''
+            execute_query(query_add_employee, (username, position, login_, hashed_password,
+                                               firebase_token, refresh_token, refresh_token_expires))
+            return jsonify({
+                "message": "Успешная регистрация первого пользователя компании",
+                "refresh_token": refresh_token,
+                "refresh_token_expires": refresh_token_expires.isoformat(),
+                "id": get_user_id(login_)
+            }), 201
 
         # Уведомляем администраторов через Firebase
         for admin_token in admin_tokens:
@@ -297,6 +314,7 @@ def login_with_token():
     data = request.json
     login_ = data.get('login')
     refresh_token = data.get('refresh_token')
+    firebase_token = data.get('firebase_token')
 
     # Проверка валидности refresh_token
     query = '''
@@ -323,14 +341,15 @@ def login_with_token():
     # Обновление refresh_token в базе данных
     update_query = '''
         UPDATE Employees
-        SET refresh_token = ?, refresh_token_expires = ?
+        SET firebase_token = ?, refresh_token = ?, refresh_token_expires = ?
         WHERE login = ?
     '''
-    execute_query(update_query, (new_refresh_token, new_refresh_token_expires, login_))
+    execute_query(update_query, (firebase_token, new_refresh_token, new_refresh_token_expires, login_))
     sessions[access_token] = {"login": login_, "expires_at": access_token_expires}
     # Возврат токенов
     return jsonify({
         "refresh_token": new_refresh_token,
+        "refresh_token_expires": new_refresh_token_expires,
         "access_token": access_token,
     }), 200
 
@@ -342,7 +361,7 @@ def get_contracts():
     try:
         start_date = datetime.strptime(data['start_date'], '%Y-%m-%d')
         end_date = datetime.strptime(data['end_date'], '%Y-%m-%d')
-        token = data['token']
+        token = data['access_token']
         check = token_check(token)
         if check:
             return check
