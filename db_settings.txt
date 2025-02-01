@@ -3,8 +3,7 @@ CREATE TABLE Contracts (
                                           UNIQUE
                                           PRIMARY KEY AUTOINCREMENT,
     title                        STRING   NOT NULL,
-    marker                       INTEGER  NOT NULL
-                                          REFERENCES Marker (ID),
+    marker                       INTEGER  NOT NULL,
     number                       INTEGER  NOT NULL,
     start_date                   DATETIME NOT NULL,
     end_date                     DATETIME NOT NULL,
@@ -35,13 +34,6 @@ CREATE TABLE Employees (
 CREATE TABLE EmployeesContracts (
     EmployeeID INTEGER REFERENCES Employees (ID),
     ContractID INTEGER REFERENCES Contracts (ID)
-);
-CREATE TABLE Marker (
-    ID   INTEGER     PRIMARY KEY AUTOINCREMENT
-                     UNIQUE
-                     NOT NULL,
-    type STRING (10) UNIQUE
-                     NOT NULL
 );
 CREATE TABLE AssignmentRequests (
     ID          INTEGER  PRIMARY KEY

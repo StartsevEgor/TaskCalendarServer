@@ -66,8 +66,8 @@ def execute_query(query: str, params=(), fetch_all=''):
                 result = None
             conn.commit()
             return result
-    except sqlite3.Error:
-        print(f"SQL Error")
+    except sqlite3.Error as e:
+        print(f"SQL Error: {e}")
         return [None]
 
 
@@ -89,19 +89,23 @@ def format_contract_row(row):
         "painted": bool(row[11]),
         "completed": bool(row[12]),
         "salary_is_taken_into_account": bool(row[13]),
+        "employees": row[14]
     }
 
 
 def ttl_check(expires_at: datetime):
-    return expires_at < datetime.now()
+    print(expires_at, datetime.now())
+    return datetime.now() < expires_at
 
 
 def token_check(token):
     session = sessions.get(token)
     if not session:
+        print("Пользователь еще не вошел в систему")
         return jsonify({"error": "Пользователь еще не вошел в систему"}), 400
     if not ttl_check(session["expires_at"]):
         del sessions[token]
+        print("Истёк срок действия токена")
         return jsonify({"error": "Истёк срок действия токена"}), 400
     session["expires_at"] = datetime.now() + timedelta(minutes=ACCESS_TOKEN_TTL)
     return None
@@ -143,7 +147,6 @@ def register():
         WHERE login = ?
         LIMIT 1
     '''
-    print(execute_query(query, (login_,), fetch_all="n")[0])
     if execute_query(query, (login_,), fetch_all="t"):
         return jsonify({"error": "Пользователь с таким логином уже существует"}), 400
     print(2)
@@ -358,6 +361,7 @@ def login_with_token():
 @app.route('/get_contracts', methods=['POST'])
 def get_contracts():
     data = request.json
+    print(data)
     try:
         start_date = datetime.strptime(data['start_date'], '%Y-%m-%d')
         end_date = datetime.strptime(data['end_date'], '%Y-%m-%d')
@@ -371,13 +375,17 @@ def get_contracts():
             WHERE login = ?
             LIMIT 1
         '''
+        print(0.1)
         position = execute_query(query_position, (sessions[token]["login"],), fetch_all="n")[0]
+        print(0.2)
         if not position:
+            print(1)
             return jsonify({"error": "Пользователь не найден"}), 400
 
         if position not in ["admin"]:
             user_id = get_user_id(sessions[token])
             if not user_id:
+                print(2)
                 return jsonify({"error": "ID пользователя не найден"}), 400
 
             query_employee = '''
@@ -388,17 +396,39 @@ def get_contracts():
                 ))
                 AND (start_date <= ?) AND (end_date >= ?)
             '''
+            print(0.3)
             result = execute_query(query_employee, (user_id, end_date, start_date), fetch_all="y")
+            print(0.4)
         else:
             query_admin = '''
                         SELECT * FROM Contracts
                         WHERE (start_date <= ?) AND (end_date >= ?)
                     '''
+            print(0.5)
             result = execute_query(query_admin, (end_date, start_date), fetch_all="y")
+            print(0.6)
 
-        formatted_result = [format_contract_row(row) for row in result]
+        # Добавляем список сотрудников для каждого контракта
+        enriched_result = []
+        for row in result:
+            contract_id = row[0]  # ID контракта
+            query_employees = '''
+                    SELECT name FROM Employees
+                    WHERE ID IN (
+                        SELECT EmployeeID FROM EmployeesContracts
+                        WHERE ContractID = ?
+                    )
+                '''
+            print(0.7)
+            employees = execute_query(query_employees, (contract_id,), fetch_all="y")
+            print(0.8)
+            employee_names = [employee[0] for employee in employees]  # Извлекаем имена сотрудников
+            enriched_result.append(row + (employee_names,))  # Добавляем список сотрудников в конец строки
+
+        formatted_result = [format_contract_row(row) for row in enriched_result]
         return jsonify(formatted_result), 200
     except Exception:
+        print(3)
         return jsonify({"error": "Ошибка получения контрактов"}), 400
 
 
