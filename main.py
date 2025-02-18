@@ -2,9 +2,10 @@ import bcrypt
 import os
 import sqlite3
 import uuid
+import json
 from datetime import datetime, timedelta
 from firebase_admin import messaging, credentials, initialize_app
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 
 # Путь для хранения файлов контрактов
 CONTRACT_FILES_PATH = 'contract_files'
@@ -73,8 +74,8 @@ def execute_query(query: str, params=(), fetch_all=''):
 
 # Вспомогательная функция для преобразования данных
 
-def format_contract_row(row):
-    return {
+def format_contract_row(row, return_employees=True):
+    result = {
         "id": row[0],
         "title": row[1],
         "marker": row[2],
@@ -82,15 +83,18 @@ def format_contract_row(row):
         "start_date": row[4],
         "end_date": row[5],
         "price": row[6],
-        "transferred_to_production": bool(row[7]),
+        "transferred_to_production": row[7] == "true",
         "file": row[8],
-        "material_is_purchased": bool(row[9]),
-        "produced": bool(row[10]),
-        "painted": bool(row[11]),
-        "completed": bool(row[12]),
-        "salary_is_taken_into_account": bool(row[13]),
-        "employees": row[14]
+        "material_is_purchased": row[9] == "true",
+        "produced": row[10] == "true",
+        "painted": row[11] == "true",
+        "completed": row[12] == "true",
+        "salary_is_taken_into_account": row[13] == "true"
     }
+    if return_employees:
+        result["employees"] = row[14]
+    print(result)
+    return result
 
 
 def ttl_check(expires_at: datetime):
@@ -129,7 +133,7 @@ def get_user_id(login_):
         WHERE login = ?
         LIMIT 1
     '''
-    return execute_query(query_id, (login_,), fetch_all="n")[0]
+    return str(execute_query(query_id, (login_,), fetch_all="n")[0])
 
 
 @app.route('/register', methods=['POST'])
@@ -383,7 +387,7 @@ def get_contracts():
             return jsonify({"error": "Пользователь не найден"}), 400
 
         if position not in ["admin"]:
-            user_id = get_user_id(sessions[token])
+            user_id = get_user_id(sessions[token]["login"])
             if not user_id:
                 print(2)
                 return jsonify({"error": "ID пользователя не найден"}), 400
@@ -432,6 +436,89 @@ def get_contracts():
         return jsonify({"error": "Ошибка получения контрактов"}), 400
 
 
+@app.route('/get_contract_file', methods=['POST'])
+def get_contract_file():
+    data = request.json
+    token = data.get('access_token')
+    contract_id = data.get('contract_id')
+
+    # Проверка токена
+    check_token = token_check(token)
+    if check_token:
+        return check_token
+
+    # Проверка прав доступа
+    check_position = position_check(token, ["admin"])
+    if check_position:
+        # Если пользователь не администратор, проверяем, привязан ли он к контракту
+        user_id = get_user_id(sessions[token]["login"])
+        if not user_id:
+            return jsonify({"error": "ID пользователя не найден"}), 400
+
+        query_check_access = '''
+            SELECT 1 FROM EmployeesContracts
+            WHERE EmployeeID = ? AND ContractID = ?
+            LIMIT 1
+        '''
+        has_access = execute_query(query_check_access, (user_id, contract_id), fetch_all="t")
+        if not has_access:
+            return jsonify({"error": "У вас нет доступа к этому контракту"}), 403
+
+    # Получение имени файла из базы данных
+    query_get_file = '''
+        SELECT file FROM Contracts
+        WHERE ID = ?
+        LIMIT 1
+    '''
+    file_name = execute_query(query_get_file, (contract_id,), fetch_all="n")[0]
+
+    if not file_name:
+        return jsonify({"error": "Файл для этого контракта не найден"}), 404
+
+    # Путь к файлу
+    file_path = os.path.join(CONTRACT_FILES_PATH, str(file_name))
+
+    # Проверка существования файла
+    if not os.path.exists(file_path):
+        return jsonify({"error": "Файл не существует на сервере"}), 404
+
+    # Отправка файла напрямую
+    try:
+        return send_file(
+            file_path,
+            as_attachment=True,  # Файл будет скачиваться, а не отображаться в браузере
+            download_name=file_name  # Имя файла для клиента
+        )
+    except Exception as e:
+        return jsonify({"error": f"Ошибка чтения файла: {str(e)}"}), 500
+
+
+@app.route('/get_unassigned_contracts', methods=['POST'])
+def get_unassigned_contracts():
+    data = request.json
+    token = data.get('access_token')
+
+    # Проверка токена
+    check_token = token_check(token)
+    if check_token:
+        return check_token
+
+    query = '''
+        SELECT *
+        FROM Contracts
+        WHERE ID NOT IN (
+            SELECT ContractID
+            FROM EmployeesContracts
+        )
+    '''
+    result = execute_query(query, fetch_all="y")
+
+    # Форматирование результата
+    formatted_result = [format_contract_row(row, return_employees=False) for row in result]
+    print(123, formatted_result[0]["completed"], type(formatted_result[0]["completed"]))
+    return jsonify(formatted_result), 200
+
+
 @app.route('/add_contract', methods=['POST'])
 def add_contract():
     data = request.form  # Используем request.form для текстовых данных
@@ -460,15 +547,18 @@ def add_contract():
                 produced, painted, completed, salary_is_taken_into_account]):
         return jsonify({"error": "Не все обязательные поля заполнены"}), 400
 
-    # Обработка файла
     file = request.files.get('file')
     unique_filename = None
     file_path = None
     if file:
-        # Проверка расширения файла
         allowed_extensions = {'docx', 'xlsx'}
         if file.filename.split('.')[-1].lower() not in allowed_extensions:
             return jsonify({"error": "Недопустимый формат файла. Разрешены только .docx и .xlsx"}), 400
+
+        max_file_size = 10 * 1024 * 1024 * 5  # 50 MB
+        if len(file.read()) > max_file_size:
+            return jsonify({"error": "Файл слишком большой. Максимальный размер: 50 MB"}), 400
+        file.seek(0)
 
         # Генерация уникального имени файла
         unique_filename = f"{uuid.uuid4()}_{file.filename}"
@@ -499,6 +589,197 @@ def add_contract():
         if unique_filename and os.path.exists(file_path):
             os.remove(file_path)
         return jsonify({"error": "Ошибка добавления контракта"}), 500
+
+
+@app.route('/request_contract_change', methods=['POST'])
+def request_contract_change():
+    data = request.json
+    token = data.get('access_token')
+    contract_id = data.get('contract_id')
+    changes = data.get('changes')  # Словарь с изменениями
+
+    # Проверка токена
+    check_token = token_check(token)
+    if check_token:
+        return check_token
+
+    # Проверка прав доступа
+    check_position = position_check(token, ["admin"])
+    if not check_position:
+        # Администратор может изменять контракты напрямую
+        try:
+            update_query = '''
+                UPDATE Contracts
+                SET 
+                    title = COALESCE(?, title),
+                    marker = COALESCE(?, marker),
+                    number = COALESCE(?, number),
+                    start_date = COALESCE(?, start_date),
+                    end_date = COALESCE(?, end_date),
+                    price = COALESCE(?, price),
+                    transferred_to_production = COALESCE(?, transferred_to_production),
+                    file = COALESCE(?, file),
+                    material_is_purchased = COALESCE(?, material_is_purchased),
+                    produced = COALESCE(?, produced),
+                    painted = COALESCE(?, painted),
+                    completed = COALESCE(?, completed),
+                    salary_is_taken_into_account = COALESCE(?, salary_is_taken_into_account)
+                WHERE ID = ?
+            '''
+            execute_query(update_query, (
+                changes.get('title'),
+                changes.get('marker'),
+                changes.get('number'),
+                changes.get('start_date'),
+                changes.get('end_date'),
+                changes.get('price'),
+                changes.get('transferred_to_production'),
+                changes.get('file'),
+                changes.get('material_is_purchased'),
+                changes.get('produced'),
+                changes.get('painted'),
+                changes.get('completed'),
+                changes.get('salary_is_taken_into_account'),
+                contract_id
+            ))
+            return jsonify({"message": "Контракт успешно обновлен"}), 200
+        except Exception as e:
+            return jsonify({"error": f"Ошибка обновления контракта: {str(e)}"}), 500
+
+    # Для обычных сотрудников создаем заявку
+    user_id = get_user_id(sessions[token]["login"])
+    if not user_id:
+        return jsonify({"error": "ID пользователя не найден"}), 400
+
+    try:
+        query_insert = '''
+            INSERT INTO ContractChangeRequests (ContractID, EmployeeID, Changes)
+            VALUES (?, ?, ?)
+        '''
+        execute_query(query_insert, (contract_id, user_id, json.dumps(changes)))
+        return jsonify({"message": "Заявка на изменение контракта отправлена"}), 201
+    except Exception as e:
+        return jsonify({"error": f"Ошибка создания заявки: {str(e)}"}), 500
+
+
+@app.route('/view_contract_change_requests', methods=['POST'])
+def view_contract_change_requests():
+    data = request.json
+    token = data.get('access_token')
+
+    # Проверка токена
+    check_token = token_check(token)
+    if check_token:
+        return check_token
+
+    # Проверка прав доступа
+    check_position = position_check(token, ["admin"])
+    if check_position:
+        return check_position
+
+    try:
+        query = '''
+            SELECT ID, ContractID, EmployeeID, Changes, Status, RequestedAt
+            FROM ContractChangeRequests
+            WHERE Status = 'PENDING'
+        '''
+        pending_requests = execute_query(query, fetch_all="y")
+        formatted_requests = [
+            {
+                "request_id": r[0],
+                "contract_id": r[1],
+                "employee_id": r[2],
+                "changes": json.loads(r[3]),
+                "status": r[4],
+                "requested_at": r[5]
+            }
+            for r in pending_requests
+        ]
+        return jsonify(formatted_requests), 200
+    except Exception as e:
+        return jsonify({"error": f"Ошибка получения заявок: {str(e)}"}), 500
+
+
+@app.route('/update_contract_change_request', methods=['POST'])
+def update_contract_change_request():
+    data = request.json
+    token = data.get('access_token')
+    request_id = data.get('request_id')
+    new_status = data.get('status')  # APPROVED или REJECTED
+
+    # Проверка токена
+    check_token = token_check(token)
+    if check_token:
+        return check_token
+
+    # Проверка прав доступа
+    check_position = position_check(token, ["admin"])
+    if check_position:
+        return check_position
+
+    if new_status not in ['APPROVED', 'REJECTED']:
+        return jsonify({"error": "Некорректный статус"}), 400
+
+    try:
+        # Получаем данные о заявке
+        query_request = '''
+            SELECT ContractID, Changes
+            FROM ContractChangeRequests
+            WHERE ID = ?
+        '''
+        request_data = execute_query(query_request, (request_id,), fetch_all="n")
+        if not request_data:
+            return jsonify({"error": "Заявка не найдена"}), 404
+
+        contract_id, changes_json = request_data
+        changes = json.loads(changes_json)
+
+        if new_status == 'APPROVED':
+            # Применяем изменения к контракту
+            update_query = '''
+                UPDATE Contracts
+                SET 
+                    title = COALESCE(?, title),
+                    marker = COALESCE(?, marker),
+                    number = COALESCE(?, number),
+                    start_date = COALESCE(?, start_date),
+                    end_date = COALESCE(?, end_date),
+                    price = COALESCE(?, price),
+                    transferred_to_production = COALESCE(?, transferred_to_production),
+                    file = COALESCE(?, file),
+                    material_is_purchased = COALESCE(?, material_is_purchased),
+                    produced = COALESCE(?, produced),
+                    painted = COALESCE(?, painted),
+                    completed = COALESCE(?, completed),
+                    salary_is_taken_into_account = COALESCE(?, salary_is_taken_into_account)
+                WHERE ID = ?
+            '''
+            execute_query(update_query, (
+                changes.get('title'),
+                changes.get('marker'),
+                changes.get('number'),
+                changes.get('start_date'),
+                changes.get('end_date'),
+                changes.get('price'),
+                changes.get('transferred_to_production'),
+                changes.get('file'),
+                changes.get('material_is_purchased'),
+                changes.get('produced'),
+                changes.get('painted'),
+                changes.get('completed'),
+                changes.get('salary_is_taken_into_account'),
+                contract_id
+            ))
+
+        # Удаляем заявку
+        query_delete = '''
+            DELETE FROM ContractChangeRequests
+            WHERE ID = ?
+        '''
+        execute_query(query_delete, (request_id,))
+        return jsonify({"message": f"Заявка успешно {new_status.lower()}"}), 200
+    except Exception as e:
+        return jsonify({"error": f"Ошибка обработки заявки: {str(e)}"}), 500
 
 
 # Добавление связи сотрудника и контракта
@@ -607,7 +888,6 @@ def update_assignment_request():
             '''
             execute_query(query_delete, (request_id,))
             return jsonify({"message": f"Запрос успешно отклонён и удалён"}), 200
-
     except Exception:
         return jsonify({"error": "Ошибка обработки заявки"}), 400
 

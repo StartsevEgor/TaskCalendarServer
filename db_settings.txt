@@ -16,6 +16,25 @@ CREATE TABLE Contracts (
     completed                    BOOLEAN  NOT NULL,
     salary_is_taken_into_account BOOLEAN  NOT NULL
 );
+CREATE TABLE ContractChangeRequests (
+    ID              INTEGER  PRIMARY KEY AUTOINCREMENT
+                             UNIQUE
+                             NOT NULL,
+    ContractID      INTEGER  NOT NULL,
+    EmployeeID      INTEGER  NOT NULL,
+    Changes         TEXT     NOT NULL, -- JSON с изменениями
+    Status          STRING   NOT NULL
+                             DEFAULT 'PENDING',
+    RequestedAt     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (
+        ContractID
+    )
+    REFERENCES Contracts (ID),
+    FOREIGN KEY (
+        EmployeeID
+    )
+    REFERENCES Employees (ID)
+);
 CREATE TABLE Employees (
     ID                    INTEGER  PRIMARY KEY AUTOINCREMENT
                                    NOT NULL
