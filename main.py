@@ -17,8 +17,11 @@ app = Flask(__name__)
 sessions = {}
 
 # Инициализация Firebase
-cred = credentials.Certificate("serviceAccountKey.json")
-initialize_app(cred)
+try:
+    cred = credentials.Certificate("task-calendar-12e74-firebase-adminsdk-o2iaf-95d0d62804.json")
+    initialize_app(cred)
+except Exception as e:
+    print(f"Error initializing Firebase: {e}")
 
 # Создание папки для файлов, если её нет
 if not os.path.exists(CONTRACT_FILES_PATH):
@@ -26,11 +29,19 @@ if not os.path.exists(CONTRACT_FILES_PATH):
 
 
 def send_push_notification(title, body, token):
+    print("Отправка уведомления 1", token)
     message = messaging.Message(
+        data={"title": title, "body": body},
         notification=messaging.Notification(title=title, body=body),
-        token=token,
+        token=token
     )
-    messaging.send(message)
+    print("Отправка уведомления 1.5")
+    try:
+        result = messaging.send(message)
+        print("Оно работает!!!", result)
+    except Exception as e:
+        print("Глюк:", e)
+    print("Отправка уведомления 2")
 
 
 def make_database():
@@ -786,27 +797,29 @@ def update_contract_change_request():
 @app.route('/assign_employee_to_contract', methods=['POST'])
 def assign_employee_to_contract():
     data = request.json
-    token = data['token']
+    token = data['access_token']
     check = token_check(token)
     if check:
         return check
     try:
-        query = 'INSERT INTO Requests (ID, ContractID, EmployeeID) VALUES (?, ?, ?)'
-        execute_query(query, (str(uuid.uuid4()), data['contract_id'], data['employee_id']))
-
+        query = 'INSERT INTO AssignmentRequests (ContractID, EmployeeID) VALUES (?, ?)'
+        execute_query(query, (data['contract_id'], data['employee_id']))
+        print(1)
         query_admins = '''
             SELECT firebase_token FROM Employees
             WHERE position = 'admin'
         '''
         admin_tokens = execute_query(query_admins, fetch_all="y")
-
+        print(2)
         # Уведомляем администраторов через Firebase
         for admin_token in admin_tokens:
+            print(3, admin_token)
             send_push_notification(
                 "Подтвердите взятие контракта",
                 f"{data['username']} хочет взять контракт {data['contract_id']}",
-                admin_token
+                admin_token[0]
             )
+            print("Запуск отправки уведомлений")
         return jsonify({"message": "Запрос отправлен на подтверждение"}), 201
     except Exception:
         return jsonify({"error": "Ошибка принятия контракта"}), 400
