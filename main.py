@@ -88,7 +88,7 @@ def execute_query(query: str, params=(), fetch_all=''):
 def format_contract_row(row, return_employees=True):
     result = {
         "id": row[0],
-        "title": row[1],
+        "title": str(row[1]),
         "marker": row[2],
         "number": row[3],
         "start_date": row[4],
@@ -223,7 +223,7 @@ def register():
 @app.route('/view_registration_requests', methods=['POST'])
 def view_registration_requests():
     data = request.json
-    token = data['token']
+    token = data['access_token']
     check_token, check_position = token_check(token), position_check(token, ["admin"])
     if check_token:
         return check_token
@@ -241,7 +241,7 @@ def view_registration_requests():
 @app.route('/update_registration_request', methods=['POST'])
 def update_registration_request():
     data = request.json
-    token = data['token']
+    token = data['access_token']
     check_token, check_position = token_check(token), position_check(token, ["admin"])
     if check_token:
         return check_token
@@ -249,7 +249,7 @@ def update_registration_request():
         return check_position
 
     try:
-        request_id = data['request_id']
+        request_id = data['id']
         new_status = data['status']  # APPROVED или REJECTED
 
         if new_status not in ['APPROVED', 'REJECTED']:
@@ -364,8 +364,19 @@ def login_with_token():
     '''
     execute_query(update_query, (firebase_token, new_refresh_token, new_refresh_token_expires, login_))
     sessions[access_token] = {"login": login_, "expires_at": access_token_expires}
+    print(sessions)
     # Возврат токенов
+    data_query = '''
+            SELECT ID, position, name
+            FROM Employees
+            WHERE login = ?
+            LIMIT 1
+        '''
+    id_, position, name = execute_query(data_query, (login_,), fetch_all="n")
     return jsonify({
+        "id": id_,
+        "position": position,
+        "name": name,
         "refresh_token": new_refresh_token,
         "refresh_token_expires": new_refresh_token_expires,
         "access_token": access_token,
@@ -379,6 +390,7 @@ def get_contracts():
     print(data)
     try:
         start_date = datetime.strptime(data['start_date'], '%Y-%m-%d')
+        print(start_date)
         end_date = datetime.strptime(data['end_date'], '%Y-%m-%d')
         token = data['access_token']
         check = token_check(token)
@@ -526,14 +538,14 @@ def get_unassigned_contracts():
 
     # Форматирование результата
     formatted_result = [format_contract_row(row, return_employees=False) for row in result]
-    print(123, formatted_result[0]["completed"], type(formatted_result[0]["completed"]))
     return jsonify(formatted_result), 200
 
 
 @app.route('/add_contract', methods=['POST'])
 def add_contract():
     data = request.form  # Используем request.form для текстовых данных
-    token = data.get('token')
+    token = data.get('access_token')
+    print("token", token)
     check_token, check_position = token_check(token), position_check(token, ["admin"])
     if check_token:
         return check_token
@@ -559,13 +571,10 @@ def add_contract():
         return jsonify({"error": "Не все обязательные поля заполнены"}), 400
 
     file = request.files.get('file')
+    print(file)
     unique_filename = None
     file_path = None
     if file:
-        allowed_extensions = {'docx', 'xlsx'}
-        if file.filename.split('.')[-1].lower() not in allowed_extensions:
-            return jsonify({"error": "Недопустимый формат файла. Разрешены только .docx и .xlsx"}), 400
-
         max_file_size = 10 * 1024 * 1024 * 5  # 50 MB
         if len(file.read()) > max_file_size:
             return jsonify({"error": "Файл слишком большой. Максимальный размер: 50 MB"}), 400
@@ -690,19 +699,31 @@ def view_contract_change_requests():
 
     try:
         query = '''
-            SELECT ID, ContractID, EmployeeID, Changes, Status, RequestedAt
-            FROM ContractChangeRequests
-            WHERE Status = 'PENDING'
-        '''
+                    SELECT
+                        ccr.ID,
+                        ccr.ContractID,
+                        c.title AS ContractTitle,
+                        ccr.EmployeeID,
+                        e.name AS EmployeeName,
+                        ccr.Changes,
+                        ccr.Status,
+                        ccr.RequestedAt
+                    FROM ContractChangeRequests ccr
+                    JOIN Contracts c ON ccr.ContractID = c.ID
+                    JOIN Employees e ON ccr.EmployeeID = e.ID
+                    WHERE ccr.Status = 'PENDING'
+                '''
         pending_requests = execute_query(query, fetch_all="y")
         formatted_requests = [
             {
-                "request_id": r[0],
+                "id": r[0],
                 "contract_id": r[1],
-                "employee_id": r[2],
-                "changes": json.loads(r[3]),
-                "status": r[4],
-                "requested_at": r[5]
+                "contract_title": r[2],
+                "employee_id": r[3],
+                "employee_name": r[4],
+                "changes": json.loads(r[5]),
+                "status": r[6],
+                "requested_at": r[7]
             }
             for r in pending_requests
         ]
@@ -715,7 +736,7 @@ def view_contract_change_requests():
 def update_contract_change_request():
     data = request.json
     token = data.get('access_token')
-    request_id = data.get('request_id')
+    request_id = data.get('id')
     new_status = data.get('status')  # APPROVED или REJECTED
 
     # Проверка токена
@@ -829,7 +850,7 @@ def assign_employee_to_contract():
 @app.route('/review_assignment_requests', methods=['POST'])
 def review_assignment_requests():
     data = request.json
-    token = data['token']
+    token = data['access_token']
     check_token, check_position = token_check(token), position_check(token, ["admin"])
     if check_token:
         return check_token
@@ -837,15 +858,33 @@ def review_assignment_requests():
         return check_position
 
     query = '''
-        SELECT ID, EmployeeID, ContractID, Status, RequestedAt
-        FROM AssignmentRequests
-        WHERE Status = 'PENDING'
-    '''
+            SELECT
+                ar.ID,
+                ar.EmployeeID,
+                e.name AS EmployeeName,
+                ar.ContractID,
+                c.title AS ContractTitle,
+                ar.Status,
+                ar.RequestedAt
+            FROM AssignmentRequests ar
+            JOIN Employees e ON ar.EmployeeID = e.ID
+            JOIN Contracts c ON ar.ContractID = c.ID
+            WHERE ar.Status = 'PENDING'
+        '''
     pending_requests = execute_query(query, fetch_all="y")
     formatted_requests = [
-        {"request_id": r[0], "employee_id": r[1], "contract_id": r[2], "status": r[3], "requested_at": r[4]}
+        {
+            "id": r[0],
+            "employee_id": r[1],
+            "employee_name": r[2],
+            "contract_id": r[3],
+            "contract_title": r[4],
+            "status": r[5],
+            "requested_at": r[6]
+        }
         for r in pending_requests
     ]
+    print(formatted_requests)
     return jsonify(formatted_requests), 200
 
 
@@ -853,7 +892,7 @@ def review_assignment_requests():
 @app.route('/update_assignment_request', methods=['POST'])
 def update_assignment_request():
     data = request.json
-    token = data['token']
+    token = data['access_token']
     check_token, check_position = token_check(token), position_check(token, ["admin"])
     if check_token:
         return check_token
@@ -861,7 +900,7 @@ def update_assignment_request():
         return check_position
 
     try:
-        request_id = data['request_id']
+        request_id = data['id']
         new_status = data['status']  # APPROVED или REJECTED
 
         if new_status not in ['APPROVED', 'REJECTED']:
