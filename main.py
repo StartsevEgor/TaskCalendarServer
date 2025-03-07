@@ -29,19 +29,15 @@ if not os.path.exists(CONTRACT_FILES_PATH):
 
 
 def send_push_notification(title, body, token):
-    print("Отправка уведомления 1", token)
     message = messaging.Message(
         data={"title": title, "body": body},
         notification=messaging.Notification(title=title, body=body),
         token=token
     )
-    print("Отправка уведомления 1.5")
     try:
         result = messaging.send(message)
-        print("Оно работает!!!", result)
     except Exception as e:
         print("Глюк:", e)
-    print("Отправка уведомления 2")
 
 
 def make_database():
@@ -104,12 +100,10 @@ def format_contract_row(row, return_employees=True):
     }
     if return_employees:
         result["employees"] = row[14]
-    print(result)
     return result
 
 
 def ttl_check(expires_at: datetime):
-    print(expires_at, datetime.now())
     return datetime.now() < expires_at
 
 
@@ -155,7 +149,6 @@ def register():
     login_ = data.get('login')
     password = data.get('password')
     firebase_token = data.get('firebase_token')
-    print(1)
     # Проверка, существует ли пользователь с таким логином
     query = '''
         SELECT 1 FROM Employees
@@ -164,7 +157,6 @@ def register():
     '''
     if execute_query(query, (login_,), fetch_all="t"):
         return jsonify({"error": "Пользователь с таким логином уже существует"}), 400
-    print(2)
 
     # Проверка, существует ли заявка с таким логином
     query_request = '''
@@ -174,7 +166,6 @@ def register():
     '''
     if execute_query(query_request, (login_,), fetch_all="t"):
         return jsonify({"error": "Заявка с таким логином уже отправлена"}), 400
-    print(3)
 
     hashed_password = hash_password(password)
     try:
@@ -183,13 +174,11 @@ def register():
             VALUES (?, ?, ?, ?, ?)
         '''
         execute_query(query_insert, (username, position, login_, hashed_password, firebase_token))
-        print(4)
         query_admins = '''
             SELECT firebase_token FROM Employees
             WHERE position = 'admin'
         '''
         admin_tokens = execute_query(query_admins, fetch_all="y")
-        print(5)
         if len(admin_tokens) == 0:
             refresh_token = str(uuid.uuid4())
             refresh_token_expires = datetime.now() + timedelta(days=REFRESH_TOKEN_TTL)
@@ -364,7 +353,6 @@ def login_with_token():
     '''
     execute_query(update_query, (firebase_token, new_refresh_token, new_refresh_token_expires, login_))
     sessions[access_token] = {"login": login_, "expires_at": access_token_expires}
-    print(sessions)
     # Возврат токенов
     data_query = '''
             SELECT ID, position, name
@@ -387,10 +375,8 @@ def login_with_token():
 @app.route('/get_contracts', methods=['POST'])
 def get_contracts():
     data = request.json
-    print(data)
     try:
         start_date = datetime.strptime(data['start_date'], '%Y-%m-%d')
-        print(start_date)
         end_date = datetime.strptime(data['end_date'], '%Y-%m-%d')
         token = data['access_token']
         check = token_check(token)
@@ -402,17 +388,13 @@ def get_contracts():
             WHERE login = ?
             LIMIT 1
         '''
-        print(0.1)
         position = execute_query(query_position, (sessions[token]["login"],), fetch_all="n")[0]
-        print(0.2)
         if not position:
-            print(1)
             return jsonify({"error": "Пользователь не найден"}), 400
 
         if position not in ["admin"]:
             user_id = get_user_id(sessions[token]["login"])
             if not user_id:
-                print(2)
                 return jsonify({"error": "ID пользователя не найден"}), 400
 
             query_employee = '''
@@ -423,17 +405,16 @@ def get_contracts():
                 ))
                 AND (start_date <= ?) AND (end_date >= ?)
             '''
-            print(0.3)
             result = execute_query(query_employee, (user_id, end_date, start_date), fetch_all="y")
-            print(0.4)
         else:
             query_admin = '''
-                        SELECT * FROM Contracts
-                        WHERE (start_date <= ?) AND (end_date >= ?)
-                    '''
-            print(0.5)
+                SELECT * FROM Contracts
+                WHERE ID IN (
+                    SELECT ContractID
+                    FROM EmployeesContracts
+                ) AND (start_date <= ?) AND (end_date >= ?)
+            '''
             result = execute_query(query_admin, (end_date, start_date), fetch_all="y")
-            print(0.6)
 
         # Добавляем список сотрудников для каждого контракта
         enriched_result = []
@@ -446,16 +427,13 @@ def get_contracts():
                         WHERE ContractID = ?
                     )
                 '''
-            print(0.7)
             employees = execute_query(query_employees, (contract_id,), fetch_all="y")
-            print(0.8)
             employee_names = [employee[0] for employee in employees]  # Извлекаем имена сотрудников
             enriched_result.append(row + (employee_names,))  # Добавляем список сотрудников в конец строки
 
         formatted_result = [format_contract_row(row) for row in enriched_result]
         return jsonify(formatted_result), 200
     except Exception:
-        print(3)
         return jsonify({"error": "Ошибка получения контрактов"}), 400
 
 
@@ -545,7 +523,6 @@ def get_unassigned_contracts():
 def add_contract():
     data = request.form  # Используем request.form для текстовых данных
     token = data.get('access_token')
-    print("token", token)
     check_token, check_position = token_check(token), position_check(token, ["admin"])
     if check_token:
         return check_token
@@ -571,7 +548,6 @@ def add_contract():
         return jsonify({"error": "Не все обязательные поля заполнены"}), 400
 
     file = request.files.get('file')
-    print(file)
     unique_filename = None
     file_path = None
     if file:
