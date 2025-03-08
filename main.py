@@ -547,10 +547,17 @@ def add_contract():
                 produced, painted, completed, salary_is_taken_into_account]):
         return jsonify({"error": "Не все обязательные поля заполнены"}), 400
 
+    print("Полученные файлы:", request.files)
     file = request.files.get('file')
+    if file:
+        print("Файл получен:", file.filename, "Размер:", len(file.read()))
+        file.seek(0)
+    else:
+        print("Файл не получен в запросе")
     unique_filename = None
     file_path = None
     if file:
+        print("Получение файла")
         max_file_size = 10 * 1024 * 1024 * 5  # 50 MB
         if len(file.read()) > max_file_size:
             return jsonify({"error": "Файл слишком большой. Максимальный размер: 50 MB"}), 400
@@ -563,6 +570,7 @@ def add_contract():
         # Сохранение файла
         try:
             file.save(file_path)
+            print("Файл сохранён")
         except Exception:
             return jsonify({"error": f"Ошибка сохранения файла"}), 500
 
