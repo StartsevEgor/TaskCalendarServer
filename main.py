@@ -597,11 +597,17 @@ def add_contract():
 
 @app.route('/request_contract_change', methods=['POST'])
 def request_contract_change():
-    data = request.json
+    data = request.form
     token = data.get('access_token')
     contract_id = data.get('contract_id')
-    changes = data.get('changes')  # Словарь с изменениями
-
+    old_changes = dict(json.loads(data.get('changes')))  # Словарь с изменениями
+    changes = {}
+    for key, val in old_changes.items():
+        if type(val) is bool:
+            changes[key] = "true" if val else "false"
+        else:
+            changes[key] = val
+    print(changes)
     # Проверка токена
     check_token = token_check(token)
     if check_token:
@@ -609,6 +615,31 @@ def request_contract_change():
 
     # Проверка прав доступа
     check_position = position_check(token, ["admin"])
+    file = request.files.get('file')
+    if file:
+        print("Файл получен:", file.filename, "Размер:", len(file.read()))
+        file.seek(0)
+    else:
+        print("Файл не получен в запросе")
+    unique_filename = None
+    if file:
+        print("Получение файла")
+        max_file_size = 10 * 1024 * 1024 * 5  # 50 MB
+        if len(file.read()) > max_file_size:
+            return jsonify({"error": "Файл слишком большой. Максимальный размер: 50 MB"}), 400
+        file.seek(0)
+
+        # Генерация уникального имени файла
+        unique_filename = f"{uuid.uuid4()}_{file.filename}"
+        file_path = os.path.join(CONTRACT_FILES_PATH, unique_filename)
+
+        # Сохранение файла
+        try:
+            file.save(file_path)
+            print("Файл сохранён")
+        except Exception:
+            return jsonify({"error": f"Ошибка сохранения файла"}), 500
+    print(check_position, not check_position)
     if not check_position:
         # Администратор может изменять контракты напрямую
         try:
@@ -638,7 +669,7 @@ def request_contract_change():
                 changes.get('end_date'),
                 changes.get('price'),
                 changes.get('transferred_to_production'),
-                changes.get('file'),
+                unique_filename,
                 changes.get('material_is_purchased'),
                 changes.get('produced'),
                 changes.get('painted'),
